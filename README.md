@@ -1,5 +1,7 @@
 # Parallel Token Prediction for Language Models (ICLR 2026)
 
+Felix Draxler*, Justus Will*, Farrin Marouf Sofian, Theofanis Karaletsos, Sameer Singh, Stephan Mandt
+
 Code coming soon.
 
 ## Citation
