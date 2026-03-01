@@ -6,7 +6,7 @@ Code coming soon.
 
 ```bibtex
 @inproceedings{
-  will2026parallel,
+  draxler2026parallel,
   title={Parallel Token Prediction for  Language Models},
   author={Felix Draxler and Justus Will and Farrin Marouf Sofian and Theofanis Karaletsos and Sameer Singh and Stephan Mandt},
   booktitle={The Fourteenth International Conference on Learning Representations},
