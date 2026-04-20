@@ -16,6 +16,8 @@ dependencies = [
     "omegaconf",
     "pyyaml",
     "peft",
+    "tiktoken",
+    "sentencepiece"
 ]
 
 [project.scripts]
