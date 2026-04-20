@@ -1,0 +1,26 @@
+precision: bf16-mixed
+data:
+  _target_: ptp.data.ChatDataModule
+  dataset_name: __DATASET_NAME__
+  tokenizer: __MODEL_ID__
+  # If the model's tokenizer has no built-in chat_template, provide one here.
+  # See https://huggingface.co/docs/transformers/chat_templating
+  # chat_template: |
+  #   {% for message in messages %}{{ message['role'] }}: {{ message['content'] }}\n{% endfor %}
+  mode: prompt
+  conversation_keys: __CONVERSATION_KEYS__
+  user_roles: __USER_ROLES__
+  assistant_roles: __ASSISTANT_ROLES__
+  add_assistant_prompt: true
+  # Prompts longer than this (in tokens) are truncated before generation.
+  max_sequence_length: __MAX_SEQUENCE_LENGTH__
+generate:
+  num_completions: 32
+  # Total context budget (tokens): prompt + generated completion must fit within this.
+  max_total_length: __MAX_SEQUENCE_LENGTH__
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.95
+teacher:
+  model_id: __MODEL_ID__
+  dtype: bfloat16

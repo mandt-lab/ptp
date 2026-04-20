@@ -1,0 +1,20 @@
+training:
+  n_epochs: 1
+  precision: bf16-mixed
+  lr: 0.0001
+  lr_warmup: 1000
+  eval_every_steps: 10000
+  # W&B project to log to. Set to 'offline' to disable logging entirely.
+  wandb_project: __WANDB_PROJECT__
+  ckeck_point_interval:
+    minutes: 30
+model:
+  _target_: ptp.lit.ParallelSamplingLightningModule
+  optim_cfg:
+    lr: 0.0001
+    lr_warmup: 1000
+  model:
+    _target_: ptp.transformer.MixedTransformerModel
+    model_id: __MODEL_ID__
+    dtype: bfloat16
+__LORA_CONFIG__

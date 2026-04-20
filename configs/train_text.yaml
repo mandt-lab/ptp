@@ -1,0 +1,15 @@
+data:
+  _target_: ptp.data.TextDocumentDataModule
+  dataset_name: __DATASET_NAME__
+  tokenizer: __MODEL_ID__
+  # NOTE: Set text_column to the column in your dataset that holds the raw text.
+  # Common values: 'text' (most datasets), 'content', 'document'.
+  text_column: __TEXT_COLUMN__
+  # Document packing length & maximum document length (longer documents are truncated)
+  max_sequence_length: __MAX_SEQUENCE_LENGTH__
+  # How many completions per above packed document & how long each completion is
+  num_completions: __NUM_COMPLETIONS__
+  train_completion_len: __COMPLETION_LENGTH__
+  # How many parallel packed documents to work on per GPU
+  batch_size: 8
+  num_workers: 4

@@ -1,0 +1,21 @@
+data:
+  _target_: ptp.data.ChatDataModule
+  dataset_name: __DATASET_NAME__
+  tokenizer: __MODEL_ID__
+  # If the model's tokenizer has no built-in chat_template, provide one here.
+  # See https://huggingface.co/docs/transformers/chat_templating
+  # chat_template: |
+  #   {% for message in messages %}{{ message['role'] }}: {{ message['content'] }}
+  #   {% endfor %}
+  mode: full
+  conversation_keys: __CONVERSATION_KEYS__
+  user_roles: __USER_ROLES__
+  assistant_roles: __ASSISTANT_ROLES__
+  # Document packing length & maximum document length (longer documents are truncated)
+  max_sequence_length: __MAX_SEQUENCE_LENGTH__
+  # How many completions per above packed document & how long each completion is
+  num_completions: __NUM_COMPLETIONS__
+  train_completion_len: __COMPLETION_LENGTH__
+  # How many parallel packed documents to work on per GPU
+  batch_size: 8
+  num_workers: 4

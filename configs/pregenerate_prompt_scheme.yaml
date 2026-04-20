@@ -1,0 +1,17 @@
+precision: bf16-mixed
+data:
+  _target_: ptp.data.PromptSchemeDataModule
+  dataset_name: __DATASET_NAME__
+  prompt_scheme: __PROMPT_SCHEME__
+  # Prompts longer than this (in tokens) are truncated before generation.
+  max_sequence_length: __MAX_SEQUENCE_LENGTH__
+generate:
+  num_completions: 32
+  # Total context budget (tokens): prompt + generated completion must fit within this.
+  max_total_length: __MAX_SEQUENCE_LENGTH__
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.95
+teacher:
+  model_id: __MODEL_ID__
+  dtype: bfloat16
