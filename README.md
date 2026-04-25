@@ -2,6 +2,8 @@
 
 Felix Draxler*, Justus Will*, Farrin Marouf Sofian, Theofanis Karaletsos, Sameer Singh, Stephan Mandt
 
+[Paper](https://openreview.net/forum?id=AGJomYSrUG) · [Project page](https://www.justuswill.com/ptp/)
+
 ## Introduction
 
 ![Next Token Prediction vs Parallel Token Prediction](figs/ar-vs-ptp.png)
