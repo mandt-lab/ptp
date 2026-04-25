@@ -379,13 +379,6 @@ def _parse_args():
         raise SystemExit(1)
 
     data_dir = experiment_dir / "data"
-    if data_dir.exists():
-        print(
-            f"Pregenerated data already exists at {data_dir}.\n"
-            "Delete or rename that directory if you want to regenerate."
-        )
-        raise SystemExit(0)
-
     print(f"Pregenerating into {data_dir} ...")
     main(
         experiment_dir=experiment_dir,
