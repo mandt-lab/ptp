@@ -1,0 +1,28 @@
+training:
+  n_steps: 1000000
+  eval_every_steps: 4000
+  precision: bf16-mixed
+  wandb_project: ptp-distill
+  check_point_interval:
+    minutes: 30
+
+data:
+  _target_: ptp.data.load.PregeneratedDataModule
+  root_dir: EXP_DIR/data
+  train_completion_len: 16
+  num_completions: 128
+  num_workers: 4
+  batch_size: 8
+  tokenizer: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+
+model:
+  _target_: ptp.lit.ParallelSamplingLightningModule
+  model:
+    _target_: ptp.transformer.MixedTransformerModel
+    dtype: bfloat16
+    model_id:
+      _target_: ptp.scaling.make_scaling_llama
+      config_name: 66k
+  optim_cfg:
+    lr: 0.0001
+    lr_warmup: 1000
