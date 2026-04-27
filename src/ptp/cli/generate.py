@@ -260,23 +260,9 @@ class GenerateSession:
     """
     Stateful wrapper for one interactive generation session.
 
-    Holds two kinds of persistent state that must survive across calls to
-    avoid repeated Triton kernel recompilation:
-
-    Mask buffers
-        ``q_cutoff``, ``q_group_start``, ``q_group_end`` are pre-allocated
-        once with shape ``[2 * gate_window]`` (the constant Q_LEN used in
-        every loop iteration under ``fixed_tokens=True``).  They are updated
-        *in-place* each step via ``fill_generate_mask_buffers``.  Because the
-        ``mask_mod`` closure is created once and always references the same
-        tensor objects, ``WrappedFlexAttention`` / ``torch.compile`` sees the
-        same Python function on every call and reuses the already-compiled
-        Triton kernel rather than recompiling.
-
-    KV cache
-        A ``DynamicCache`` plus the last prompt token IDs are kept between
-        calls so that a repeated prompt prefix (system prompt + growing
-        conversation) is not re-processed by the prefill step.
+    Holds KV cache state across calls so that a repeated prompt prefix
+    (system prompt + growing conversation) is not re-processed by the
+    prefill step.
 
     Usage
     -----
@@ -301,7 +287,6 @@ class GenerateSession:
         fixed_tokens: bool = True,
         pad_token: int = 13,
     ):
-        import torch
         self.lit_model = lit_model
         self.gate_window = gate_window
         self.device = device
@@ -309,26 +294,6 @@ class GenerateSession:
         self.eos = eos
         self.fixed_tokens = fixed_tokens
         self.pad_token = pad_token
-
-        # ── Mask buffers ──────────────────────────────────────────────────
-        # Q_LEN == 2*gate_window throughout the generate loop in
-        # fixed_tokens=True mode.  Allocate once; fill in-place each step.
-        q_len = 2 * gate_window
-        _qc = torch.empty(q_len, dtype=torch.long, device=device)
-        _qs = torch.empty(q_len, dtype=torch.long, device=device)
-        _qe = torch.empty(q_len, dtype=torch.long, device=device)
-
-        # Capture via local aliases so the closure does not hold a reference
-        # to ``self``, which would prevent GC if the session is deleted.
-        def _mask_mod(_b, _h, q_idx, kv_idx):
-            before_cutoff = kv_idx <= _qc[q_idx]
-            in_group      = (kv_idx >= _qs[q_idx]) & (kv_idx <= _qe[q_idx])
-            return before_cutoff | in_group
-
-        # The tuple is passed directly to lit_model.generate() as mask_buffers.
-        self._mask_buffers = (_qc, _qs, _qe, _mask_mod)
-
-        # ── KV cache ──────────────────────────────────────────────────────
         self._past_kv_cache: tuple | None = None
 
     # ------------------------------------------------------------------
@@ -339,19 +304,12 @@ class GenerateSession:
         """Discard the cached KV state.  Call after /reset or a new topic."""
         self._past_kv_cache = None
 
-    def warmup(self, warmup_prompt_lengths: tuple[int, ...] = (22, 128)) -> None:
+    def warmup(self, warmup_prompt_lengths: tuple[int, ...] = (128,)) -> None:
         """
-        Pre-compile Triton / torch.compile kernels for representative shapes.
+        Warm up torch.compile kernels for representative prompt lengths.
 
-        Runs a dummy ``generate()`` for each length in
-        ``warmup_prompt_lengths``.  The default covers:
-
-        * ``22``  (``gate_window + 2``) – shortest sequence; warms up the
-          minimum code path that the mask-buffer logic will use.
-        * ``128`` – typical first-turn length; avoids a recompile on the
-          very first real user prompt.
-
-        Add larger values (256, 512 …) when system prompts are long.
+        Runs a dummy ``generate()`` for each length so that the first real
+        user prompt doesn't pay the compilation cost.
         KV state accumulated during warmup is discarded via ``reset()``.
         """
         import torch
@@ -400,7 +358,6 @@ class GenerateSession:
                 eos=self.eos,
                 fixed_tokens=self.fixed_tokens,
                 pad_token=self.pad_token,
-                mask_buffers=self._mask_buffers,
             )
         if return_metrics:
             completion, self._past_kv_cache, metrics = result
@@ -419,7 +376,7 @@ def main(
     temperature: float | None = None,
     max_new_tokens: int = 512,
     show_only_valid: bool = False,
-    compile: bool = False,
+    compile: bool = True,
 ):
     import torch
     import yaml
@@ -439,6 +396,8 @@ def main(
     ckpt_path = checkpoint or find_best_checkpoint(ckpt_dir)
     print(f"Loading checkpoint: {ckpt_path}")
 
+    # Use SDPA for generation: no per-shape Triton recompilation from variable KV_LEN.
+    OmegaConf.update(config, "model.model.attn_implementation", "sdpa", merge=True)
     lit_model = instantiate(config["model"])
     lit_model.configure_model()
 
@@ -477,8 +436,7 @@ def main(
 
     # Compile after enter_inference_mode so torch.compile traces the fused
     # GatedLinearLoraMerged layers, not the original PEFT LoRA modules.
-    # dynamic=True avoids recompilation for varying sequence lengths across
-    # prompts and speculative-decoding steps.
+    # dynamic=True handles variable prompt lengths across turns.
     if compile:
         lit_model.model.model = torch.compile(lit_model.model.model, dynamic=True)
 
@@ -493,9 +451,7 @@ def main(
     if custom_template and not getattr(tokenizer, "chat_template", None):
         tokenizer.chat_template = custom_template
 
-    # Create a session that holds the KV cache and the persistent mask_mod
-    # closure between calls so WrappedFlexAttention / torch.compile can reuse
-    # the compiled Triton kernel instead of recompiling every step.
+    # Create a session that holds KV cache state between calls.
     session = GenerateSession(
         lit_model,
         gate_window=gate_window,
@@ -503,13 +459,9 @@ def main(
         autocast_dtype=autocast_dtype,
     )
 
-    # Warm up flex_attention kernels.
-    # * 22 tokens (gate_window+2) – covers the minimum speculative-decoding
-    #   code path and warms up the stable Q_LEN = 2*gate_window shape.
-    # * 128 tokens – typical first-turn prompt; avoids a recompile on the
-    #   very first real user message.
+    # Warm up torch.compile kernels for a typical prompt length.
     print("Warming up...", end="", flush=True)
-    session.warmup(warmup_prompt_lengths=(gate_window + 2, 128))
+    session.warmup()
     print(" done.")
 
     print("Measuring AR baseline...", end="", flush=True)

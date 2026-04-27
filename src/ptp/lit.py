@@ -1,5 +1,4 @@
-import contextlib
-import time
+import warnings
 
 from lightning.pytorch import LightningModule
 from typing import Literal, List, Mapping, Any
@@ -11,8 +10,6 @@ from torch.nn.attention.flex_attention import create_block_mask
 from ptp.attention import (
     make_ar_mask_mod,
     make_completion_mask_mod,
-    make_generate_mask_mod,
-    fill_generate_mask_buffers,
 )
 from ptp.data.collate import IGNORE_INDEX
 from ptp.data.utils import predict_bin_edges
@@ -71,7 +68,7 @@ class ParallelSamplingLightningModule(LightningModule):
         """Switch back to training mode: restore GatedLinearLora layers."""
         self.model.exit_inference_mode()
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict, strict=True, assign=False):
         # Rename any keys starting with "student." to "model."
         renamed_state_dict = {}
         for key, value in state_dict.items():
@@ -80,7 +77,69 @@ class ParallelSamplingLightningModule(LightningModule):
             if ".u_adapter." in key:
                 key = key.replace(".u_adapter.", ".u_embed.", 1)
             renamed_state_dict[key] = value
-        return super().load_state_dict(renamed_state_dict, strict=strict)
+
+        # Adapter-only checkpoints intentionally omit base-model parameters.
+        # Auto-relax strict loading for that case while preserving strict behavior
+        # for full checkpoints.
+        adapter_only_state = bool(renamed_state_dict) and all(
+            self._is_adapter_state_key(key) for key in renamed_state_dict.keys()
+        )
+        if strict and adapter_only_state:
+            warnings.warn(
+                "Detected adapter-only state dict; loading with strict=False to allow missing base-model weights.",
+                RuntimeWarning,
+            )
+            strict = False
+
+        if not strict:
+            return super().load_state_dict(renamed_state_dict, strict=False, assign=assign)
+
+        try:
+            return super().load_state_dict(renamed_state_dict, strict=True, assign=assign)
+        except RuntimeError:
+            pass
+
+        result = super().load_state_dict(renamed_state_dict, strict=False, assign=assign)
+        allowed_missing_prefixes = (
+            "model.u_scale_embed.",
+            "model.time_embed.",
+        )
+        disallowed_missing = [
+            key for key in result.missing_keys
+            if not key.startswith(allowed_missing_prefixes)
+            and ".adaLN_modulation." not in key
+        ]
+        if disallowed_missing or result.unexpected_keys:
+            problems = []
+            if disallowed_missing:
+                problems.append(f"Missing key(s): {disallowed_missing}")
+            if result.unexpected_keys:
+                problems.append(f"Unexpected key(s): {result.unexpected_keys}")
+            raise RuntimeError("Error(s) in loading state_dict for "
+                               f"{self.__class__.__name__}: " + "; ".join(problems))
+        return result
+
+    @staticmethod
+    def _is_adapter_state_key(key: str) -> bool:
+        # Keep LoRA parameters and project-specific auxiliary embedding weights.
+        return (
+            ('lora_' in key)
+            or ('.u_embed.' in key)
+            or ('.u_scale_embed.' in key)
+            or ('.time_embed.' in key)
+            or ('.adaLN_modulation.' in key)
+        )
+
+    def _adapter_state_dict(self, state_dict: Mapping[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in state_dict.items() if self._is_adapter_state_key(k)}
+
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        state_dict = checkpoint.get('state_dict')
+        if state_dict is None or self.checkpoint_save_mode == 'full':
+            return
+        if self.checkpoint_save_mode == 'adapter_only':
+            adapter_state_dict = self._adapter_state_dict(state_dict)
+            checkpoint['state_dict'] = adapter_state_dict
 
     def configure_optimizers(self):
         config = self.optim_cfg
@@ -557,7 +616,7 @@ class ParallelSamplingLightningModule(LightningModule):
     @torch.inference_mode()
     def generate(self, batch, max_new_tokens, return_metrics=False, return_past_key_values=False,
                  eos=None, fixed_tokens=True, pad_token=13, past_kv_cache=None, callback=None,
-                 mask_buffers=None, **kwargs):
+                 **kwargs):
         """
         Partial Quadratic Coding using kv-cached Gated LoRA
 
@@ -650,22 +709,14 @@ class ParallelSamplingLightningModule(LightningModule):
             for d, n_prop in enumerate(n_props):
                 input_position_ids[:, midx: midx + n_prop] -= midx - pos + n_verify - d + 1
                 midx += n_prop
-            # Flex attention block mask (replaces the dense float16 tril mask).
-            # When mask_buffers is provided (from GenerateSession), reuse the
-            # pre-allocated tensors and the same mask_mod closure so that
-            # WrappedFlexAttention / torch.compile sees the same function object
-            # on every call and reuses the compiled Triton kernel.
-            if mask_buffers is not None and Q_LEN == mask_buffers[0].shape[0]:
-                _qc, _qs, _qe, mask_mod = mask_buffers
-                fill_generate_mask_buffers(
-                    _qc, _qs, _qe, K, P, n_verify, n_props, seq_len, dev,
-                )
-            else:
-                mask_mod = make_generate_mask_mod(K, P, n_verify, n_props, Q_LEN, seq_len, dev)
-            with torch.inference_mode(False):
-                input_mask = create_block_mask(
-                    mask_mod, B=None, H=None, Q_LEN=Q_LEN, KV_LEN=seq_len, device=dev,
-                )
+            # Dense additive attention mask [1, 1, Q_LEN, KV_LEN].
+            # SDPA handles variable KV_LEN natively without per-shape recompilation.
+            midx = pos
+            input_mask = torch.tril(torch.ones(Q_LEN, seq_len, device=dev), diagonal=K)
+            for d, n_prop in enumerate(n_props):
+                input_mask[midx: midx + n_prop, P - n_verify + d : K + midx] = 0
+                midx += n_prop
+            input_mask = (1 - input_mask[None, None].to(torch.float16)) * -1e15
 
             # Student proposals
             if not fixed_tokens:

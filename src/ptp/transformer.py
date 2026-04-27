@@ -131,7 +131,7 @@ class GatedLinearLoraMerged(nn.Module):
 class TransformerModel(torch.nn.Module):
     def __init__(self, model_id, reset_parameters=False, dtype: torch.dtype | str = torch.float32,
                  use_gradient_checkpointing: bool = False, lora_config=None, patch_norm: bool = False,
-                 gate_window=0, **kwargs):
+                 gate_window=0, attn_implementation: str = "flex_attention", **kwargs):
         super().__init__()
         # Convert string dtype to torch dtype
         if isinstance(dtype, str):
@@ -145,7 +145,7 @@ class TransformerModel(torch.nn.Module):
             # Use torch_dtype parameter for Hugging Face compatibility
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id, torch_dtype=dtype,
-                attn_implementation="flex_attention",
+                attn_implementation=attn_implementation,
                 **kwargs
             )
             if reset_parameters:
@@ -370,5 +370,4 @@ class MixedTransformerModel(TransformerModel):
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            kernel_options={"BACKEND": "TRITON"}
         )
