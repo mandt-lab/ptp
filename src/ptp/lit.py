@@ -50,6 +50,7 @@ class ParallelSamplingLightningModule(LightningModule):
         self.pbar_metrics = pbar_metrics
 
         self.tokens_per_student_call = tokens_per_student_call
+        self.total_token_budget: int | None = None
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
@@ -640,7 +641,7 @@ class ParallelSamplingLightningModule(LightningModule):
         metrics = {'correct': [], 'N': [], 'Nrel': []}
 
         # Number of tokens proposed per speculative decoding step
-        num_proposed_tokens = tpsc if fixed_tokens else None
+        num_proposed_tokens = (self.total_token_budget or tpsc) if fixed_tokens else None
 
         # Verify in parallel
         tokens_to_fill = max_new_tokens

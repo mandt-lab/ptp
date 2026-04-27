@@ -203,7 +203,8 @@ def _print_generation_stats(prompt_length: int, completion, metrics: dict | None
     if ar_ms_per_token is not None and elapsed_ms is not None and generated_tokens > 0:
         spec_ms_per_token = elapsed_ms / generated_tokens
         speedup = ar_ms_per_token / spec_ms_per_token
-        ar_str = f", AR baseline {ar_ms_per_token:.1f} ms/token, speedup {speedup:.2f}x"
+        implementation_overhead = tokens_per_call / speedup - 1
+        ar_str = f", AR baseline {ar_ms_per_token:.1f} ms/token, speedup {speedup:.2f}x (includes {implementation_overhead:.0%} implementation overhead)"
 
     print(
         "Generation stats: "
@@ -370,7 +371,8 @@ def main(
     experiment_dir: Path,
     checkpoint: Path | None = None,
     variant_name: str = "",
-    gate_window: int = 20,
+    max_tokens_per_proposal: int = 20,
+    total_token_budget: int | None = None,
     top_k: int = 50,
     top_p: float = 0.9,
     temperature: float | None = None,
@@ -416,7 +418,9 @@ def main(
             "Some sampling parameters are missing. Consider setting them in the config "
             "or via command-line arguments for consistent generation behavior."
         )
-    lit_model.tokens_per_student_call = gate_window
+    total_budget = total_token_budget or max_tokens_per_proposal
+    lit_model.tokens_per_student_call = max_tokens_per_proposal
+    lit_model.total_token_budget = total_budget
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     lit_model = lit_model.to(device)
@@ -432,7 +436,7 @@ def main(
         autocast_dtype = None
 
     _load_or_compute_hist_base(lit_model, config, experiment_dir, ckpt_path, ckpt_dir, autocast_dtype, device)
-    lit_model.enter_inference_mode(gate_window=gate_window)
+    lit_model.enter_inference_mode(gate_window=total_budget)
 
     # Compile after enter_inference_mode so torch.compile traces the fused
     # GatedLinearLoraMerged layers, not the original PEFT LoRA modules.
@@ -454,7 +458,7 @@ def main(
     # Create a session that holds KV cache state between calls.
     session = GenerateSession(
         lit_model,
-        gate_window=gate_window,
+        gate_window=total_budget,
         device=device,
         autocast_dtype=autocast_dtype,
     )
@@ -469,7 +473,8 @@ def main(
     print(f" {ar_ms_per_token:.1f} ms/token (AR baseline).")
 
     print(f"\nModel ready on {device}. Type your prompt and press Enter.")
-    print("(Ctrl-D, 'quit', or '/reset' to clear chat history)\n")
+    help_string = "(Ctrl-D, 'quit', or '/reset' to clear chat history)\n"
+    print(help_string)
 
     messages = []
 
@@ -480,7 +485,7 @@ def main(
             except EOFError:
                 break
             except KeyboardInterrupt:
-                print("\nGeneration canceled.")
+                print(f"\nPrompt ignored. {help_string}")
                 continue
 
             if prompt.lower() in ("quit", "exit", "q"):
@@ -490,6 +495,7 @@ def main(
                 session.reset()
                 print("Chat history cleared.")
                 continue
+
             if not prompt:
                 continue
 
@@ -530,6 +536,7 @@ def main(
                 _print_generation_stats(input_ids.shape[1], completion, metrics, elapsed_ms, ar_ms_per_token)
             except KeyboardInterrupt:
                 print("\n\nGeneration interrupted by user.")
+                print(help_string)
                 session.reset()
     finally:
         _save_readline_history(history_path)
@@ -561,8 +568,16 @@ def _parse_args():
         ),
     )
     parser.add_argument(
-        "--gate-window", type=int, default=20,
-        help="Proposed tokens per speculative step (default: 20).",
+        "--max-tokens-per-proposal", type=int, default=20,
+        help="Maximum tokens the student proposes per speculative depth (default: 20).",
+    )
+    parser.add_argument(
+        "--total-token-budget", type=int, default=None,
+        help=(
+            "Total proposal tokens across all depths per forward pass. "
+            "Defaults to --max-tokens-per-proposal (single-depth mode). "
+            "Set larger to enable multi-depth speculation."
+        ),
     )
     parser.add_argument(
         "--top-k", type=int, default=50,
@@ -581,8 +596,8 @@ def _parse_args():
         help="Maximum tokens to generate per prompt (default: 512).",
     )
     parser.add_argument(
-        "--compile", action="store_true",
-        help="Use torch.compile to speed up generation (default: False).",
+        "--no-compile", action="store_true",
+        help="Don't use torch.compile to speed up generation (default: use compile).",
         default=False,
     )
     parser.add_argument(
@@ -603,13 +618,14 @@ def _parse_args():
         experiment_dir=experiment_dir,
         checkpoint=args.checkpoint,
         variant_name=args.variant,
-        gate_window=args.gate_window,
+        max_tokens_per_proposal=args.max_tokens_per_proposal,
+        total_token_budget=args.total_token_budget,
         max_new_tokens=args.max_new_tokens,
         show_only_valid=args.show_only_valid,
         top_k=args.top_k,
         top_p=args.top_p,
         temperature=args.temperature,
-        compile=args.compile,
+        compile=not args.no_compile,
     )
 
 
